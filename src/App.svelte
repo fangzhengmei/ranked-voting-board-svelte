@@ -1,5 +1,5 @@
 <script>
-  import { calculateRankings, generateId } from './lib/ranking.js'
+  import { calculateRankings, generateId, sanitizeRanking, validateVote } from './lib/ranking.js'
   
   let options = [
     { id: generateId(), name: '选项 A' },
@@ -18,10 +18,36 @@
   let newOptionName = ''
   let newUserName = ''
   let selectedUser = 'user1'
+  let validationErrors = {}
   
   users.forEach(user => {
     votes[user.id] = options.map(opt => opt.id)
   })
+  
+  function sanitizeAllVotes() {
+    const validOptionIds = options.map(opt => opt.id)
+    Object.keys(votes).forEach(userId => {
+      const oldRanking = votes[userId]
+      const newRanking = sanitizeRanking(oldRanking, validOptionIds)
+      if (JSON.stringify(oldRanking) !== JSON.stringify(newRanking)) {
+        votes[userId] = newRanking
+      }
+    })
+  }
+  
+  $: {
+    const newErrors = {}
+    users.forEach(user => {
+      const validation = validateVote(
+        { ranking: votes[user.id] || [] },
+        options
+      )
+      if (!validation.valid) {
+        newErrors[user.id] = validation.errors
+      }
+    })
+    validationErrors = newErrors
+  }
   
   $: rankings = calculateRankings(options, Object.entries(votes).map(([userId, ranking]) => ({
     userId,

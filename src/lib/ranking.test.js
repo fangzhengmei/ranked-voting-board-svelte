@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { calculateRankings } from './ranking'
+import { calculateRankings, sanitizeRanking, validateVote } from './ranking'
 
 describe('排名计算逻辑', () => {
   describe('基本排名计算', () => {
@@ -9,7 +9,7 @@ describe('排名计算逻辑', () => {
       expect(calculateRankings(options, votes)).toEqual([])
     })
 
-    it('没有投票时应按原始顺序排列，分数均为0', () => {
+    it('没有投票时应按原始顺序排列，分数均为0且并列第1', () => {
       const options = [
         { id: '1', name: '选项A' },
         { id: '2', name: '选项B' },
@@ -20,9 +20,7 @@ describe('排名计算逻辑', () => {
       
       expect(result.length).toBe(3)
       expect(result.every(r => r.score === 0)).toBe(true)
-      expect(result[0].rank).toBe(1)
-      expect(result[1].rank).toBe(2)
-      expect(result[2].rank).toBe(3)
+      expect(result.every(r => r.rank === 1)).toBe(true)
     })
 
     it('单人投票应完全按投票顺序排列', () => {
@@ -207,6 +205,307 @@ describe('排名计算逻辑', () => {
       expect(optionB.rank).toBe(1)
       expect(optionC.rank).toBe(3)
       expect(optionD.rank).toBe(4)
+    })
+  })
+
+  describe('异常投票数据防护', () => {
+    const options = [
+      { id: '1', name: '选项A' },
+      { id: '2', name: '选项B' },
+      { id: '3', name: '选项C' }
+    ]
+
+    describe('重复候选处理', () => {
+      it('投票顺序中有重复候选时应只计一次', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: ['1', '1', '2'] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        const optionA = result.find(r => r.id === '1')
+        const optionB = result.find(r => r.id === '2')
+        const optionC = result.find(r => r.id === '3')
+        
+        expect(optionA.score).toBe(2)
+        expect(optionB.score).toBe(1)
+        expect(optionC.score).toBe(0)
+      })
+
+      it('多个重复候选应按首次出现位置计分', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: ['1', '2', '2', '1'] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        const optionA = result.find(r => r.id === '1')
+        const optionB = result.find(r => r.id === '2')
+        
+        expect(optionA.score).toBe(2)
+        expect(optionB.score).toBe(1)
+      })
+    })
+
+    describe('缺失候选处理', () => {
+      it('缺少候选时应将缺失项排在最后并给予最低分数', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: ['1', '2'] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        const optionC = result.find(r => r.id === '3')
+        expect(optionC.score).toBe(0)
+      })
+
+      it('缺少多个候选时应按选项顺序依次排在最后', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: ['1'] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        expect(result.length).toBe(3)
+      })
+
+      it('完全空投票应按选项顺序计分', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: [] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        const optionA = result.find(r => r.id === '1')
+        const optionB = result.find(r => r.id === '2')
+        const optionC = result.find(r => r.id === '3')
+        
+        expect(optionA.score).toBe(2)
+        expect(optionB.score).toBe(1)
+        expect(optionC.score).toBe(0)
+      })
+    })
+
+    describe('未知候选ID处理', () => {
+      it('未知候选ID应被忽略', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: ['1', 'unknown', '2'] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        const optionA = result.find(r => r.id === '1')
+        const optionB = result.find(r => r.id === '2')
+        
+        expect(optionA.score).toBe(2)
+        expect(optionB.score).toBe(1)
+      })
+
+      it('全部是未知ID时应按选项顺序计分', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: ['x', 'y', 'z'] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        const optionA = result.find(r => r.id === '1')
+        const optionB = result.find(r => r.id === '2')
+        const optionC = result.find(r => r.id === '3')
+        
+        expect(optionA.score).toBe(2)
+        expect(optionB.score).toBe(1)
+        expect(optionC.score).toBe(0)
+      })
+
+      it('混合未知和重复ID应正确处理', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: ['1', 'unknown', '1', '2'] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        const optionA = result.find(r => r.id === '1')
+        const optionB = result.find(r => r.id === '2')
+        const optionC = result.find(r => r.id === '3')
+        
+        expect(optionA.score).toBe(2)
+        expect(optionB.score).toBe(1)
+        expect(optionC.score).toBe(0)
+      })
+    })
+
+    describe('无效数据类型处理', () => {
+      it('null 选项应返回空数组', () => {
+        expect(calculateRankings(null, [])).toEqual([])
+      })
+
+      it('undefined 选项应返回空数组', () => {
+        expect(calculateRankings(undefined, [])).toEqual([])
+      })
+
+      it('无效格式选项应被过滤', () => {
+        const invalidOptions = [
+          null, undefined, {}, { id: null }, { id: '' }, { id: 123 }, options[0]]
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: [options[0].id, options[1].id, options[2].id] }
+        ]
+        const result = calculateRankings(invalidOptions, votes)
+        
+        expect(result.length).toBe(1)
+        expect(result[0].id).toBe(options[0].id)
+      })
+
+      it('null 投票应被忽略', () => {
+        const votes = [
+          null, undefined, { userId: 'u1', userName: '用户1', ranking: ['1', '2', '3'] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        expect(result.length).toBe(3)
+      })
+
+      it('无 ranking 字段的投票应被忽略', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1' },
+          { userId: 'u2', userName: '用户2', ranking: ['1', '2', '3'] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        expect(result.length).toBe(3)
+      })
+    })
+
+    describe('越界索引处理', () => {
+      it('投票长度超过选项数量应只取前N个', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: ['1', '2', '3', '2', '1'] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        const optionA = result.find(r => r.id === '1')
+        const optionB = result.find(r => r.id === '2')
+        const optionC = result.find(r => r.id === '3')
+        
+        expect(optionA.score).toBe(2)
+        expect(optionB.score).toBe(1)
+        expect(optionC.score).toBe(0)
+      })
+    })
+
+    describe('异常数据后的排名稳定性', () => {
+      it('存在异常投票时排名应可解释', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: ['1', '1', 'unknown', '2'] },
+          { userId: 'u2', userName: '用户2', ranking: ['2', '3'] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        expect(result.length).toBe(3)
+        expect(result.every(r => typeof r.score === 'number')).toBe(true)
+        expect(result.every(r => typeof r.rank === 'number')).toBe(true)
+      })
+
+      it('所有投票都异常时应按选项顺序计分', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: ['unknown'] },
+          { userId: 'u2', userName: '用户2', ranking: [] }
+        ]
+        const result = calculateRankings(options, votes)
+        
+        const optionA = result.find(r => r.id === '1')
+        const optionB = result.find(r => r.id === '2')
+        const optionC = result.find(r => r.id === '3')
+        
+        expect(optionA.score).toBe(4)
+        expect(optionB.score).toBe(2)
+        expect(optionC.score).toBe(0)
+      })
+    })
+  })
+
+  describe('sanitizeRanking 函数', () => {
+    it('应过滤重复项并追加缺失项', () => {
+      const validOptionIds = ['1', '2', '3']
+      const ranking = ['1', '1', '2']
+      const result = sanitizeRanking(ranking, validOptionIds)
+      
+      expect(result).toEqual(['1', '2', '3'])
+    })
+
+    it('应过滤未知ID', () => {
+      const validOptionIds = ['1', '2', '3']
+      const ranking = ['1', 'unknown', '2']
+      const result = sanitizeRanking(ranking, validOptionIds)
+      
+      expect(result).toEqual(['1', '2', '3'])
+    })
+
+    it('null 输入应返回默认排序', () => {
+      const validOptionIds = ['1', '2', '3']
+      const result = sanitizeRanking(null, validOptionIds)
+      
+      expect(result).toEqual(['1', '2', '3'])
+    })
+  })
+
+  describe('validateVote 函数', () => {
+    const validOptions = [
+      { id: '1', name: '选项A' },
+      { id: '2', name: '选项B' },
+      { id: '3', name: '选项C' }
+    ]
+
+    it('有效投票应返回 valid=true', () => {
+      const vote = { ranking: ['1', '2', '3'] }
+      const result = validateVote(vote, validOptions)
+      
+      expect(result.valid).toBe(true)
+      expect(result.errors).toEqual([])
+    })
+
+    it('应检测重复候选', () => {
+      const vote = { ranking: ['1', '1', '2'] }
+      const result = validateVote(vote, validOptions)
+      
+      expect(result.valid).toBe(false)
+      expect(result.errors.some(e => e.includes('重复'))).toBe(true)
+    })
+
+    it('应检测未知候选ID', () => {
+      const vote = { ranking: ['1', 'unknown', '3'] }
+      const result = validateVote(vote, validOptions)
+      
+      expect(result.valid).toBe(false)
+      expect(result.errors.some(e => e.includes('未知'))).toBe(true)
+    })
+
+    it('应检测缺失候选', () => {
+      const vote = { ranking: ['1', '2'] }
+      const result = validateVote(vote, validOptions)
+      
+      expect(result.valid).toBe(false)
+      expect(result.errors.some(e => e.includes('缺少'))).toBe(true)
+    })
+
+    it('应检测无效类型', () => {
+      const vote = { ranking: ['1', null, 123, '', '3'] }
+      const result = validateVote(vote, validOptions)
+      
+      expect(result.valid).toBe(false)
+      expect(result.errors.some(e => e.includes('无效类型'))).toBe(true)
+    })
+
+    it('应返回修正后的 ranking', () => {
+      const vote = { ranking: ['1', '1', 'unknown', '3'] }
+      const result = validateVote(vote, validOptions)
+      
+      expect(result.ranking).toEqual(['1', '3', '2'])
+    })
+
+    it('null 投票应返回错误', () => {
+      const result = validateVote(null, validOptions)
+      
+      expect(result.valid).toBe(false)
+      expect(result.errors).toContain('投票对象无效')
+    })
+
+    it('无 ranking 字段应返回错误', () => {
+      const result = validateVote({}, validOptions)
+      
+      expect(result.valid).toBe(false)
+      expect(result.errors).toContain('ranking 必须是数组')
     })
   })
 })
