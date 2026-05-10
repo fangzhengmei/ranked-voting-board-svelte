@@ -1,6 +1,28 @@
 import { describe, it, expect } from 'vitest'
 import { calculateRankings, sanitizeRanking, validateVote } from './ranking'
 
+function deriveNormalizedData(currentOptions, currentUsers, currentRawVotes) {
+  const result = {
+    normalizedVotes: {},
+    validations: {}
+  }
+  
+  if (!Array.isArray(currentOptions) || !Array.isArray(currentUsers)) {
+    return result
+  }
+  
+  currentUsers.forEach(user => {
+    const rawRanking = currentRawVotes?.[user.id] || []
+    const normalizedRanking = sanitizeRanking(rawRanking, currentOptions.map(opt => opt.id))
+    const validation = validateVote({ ranking: rawRanking }, currentOptions)
+    
+    result.normalizedVotes[user.id] = normalizedRanking
+    result.validations[user.id] = validation
+  })
+  
+  return result
+}
+
 describe('排名计算逻辑', () => {
   describe('基本排名计算', () => {
     it('空选项应返回空数组', () => {
@@ -705,6 +727,252 @@ describe('排名计算逻辑', () => {
         
         const duplicateErrors = result.errors.filter(e => e.includes('重复候选'))
         expect(duplicateErrors.length).toBe(1)
+      })
+    })
+  })
+
+  describe('deriveNormalizedData 响应式依赖回归测试', () => {
+    const options = [
+      { id: '1', name: '选项A' },
+      { id: '2', name: '选项B' },
+      { id: '3', name: '选项C' }
+    ]
+    const users = [
+      { id: 'user1', name: '用户1' },
+      { id: 'user2', name: '用户2' }
+    ]
+
+    describe('基础依赖测试', () => {
+      it('options 变化时应重新计算规范化结果', () => {
+        const rawVotes = { user1: ['1', '2', '3'], user2: ['3', '2', '1'] }
+        
+        const result1 = deriveNormalizedData(options, users, rawVotes)
+        expect(Object.keys(result1.normalizedVotes).length).toBe(2)
+        
+        const newOptions = [...options, { id: '4', name: '选项D' }]
+        const result2 = deriveNormalizedData(newOptions, users, rawVotes)
+        
+        expect(result1.normalizedVotes.user1.length).toBe(3)
+        expect(result2.normalizedVotes.user1.length).toBe(4)
+      })
+
+      it('users 变化时应重新计算规范化结果', () => {
+        const rawVotes = { user1: ['1', '2', '3'], user2: ['3', '2', '1'] }
+        
+        const result1 = deriveNormalizedData(options, users, rawVotes)
+        expect(Object.keys(result1.normalizedVotes).length).toBe(2)
+        
+        const newUsers = [...users, { id: 'user3', name: '用户3' }]
+        const newRawVotes = { ...rawVotes, user3: ['2', '1', '3'] }
+        const result2 = deriveNormalizedData(options, newUsers, newRawVotes)
+        
+        expect(Object.keys(result2.normalizedVotes).length).toBe(3)
+      })
+
+      it('rawVotes 变化时应重新计算规范化结果', () => {
+        const rawVotes1 = { user1: ['1', '2', '3'], user2: ['3', '2', '1'] }
+        const rawVotes2 = { user1: ['3', '2', '1'], user2: ['1', '2', '3'] }
+        
+        const result1 = deriveNormalizedData(options, users, rawVotes1)
+        const result2 = deriveNormalizedData(options, users, rawVotes2)
+        
+        expect(result1.normalizedVotes.user1).toEqual(['1', '2', '3'])
+        expect(result2.normalizedVotes.user1).toEqual(['3', '2', '1'])
+      })
+    })
+
+    describe('操作场景回归测试', () => {
+      it('添加候选项后应自动追加到所有用户规范化投票末尾', () => {
+        const rawVotes = { user1: ['1', '2', '3'], user2: ['3', '2', '1'] }
+        
+        const result1 = deriveNormalizedData(options, users, rawVotes)
+        
+        const newOption = { id: '4', name: '选项D' }
+        const newOptions = [...options, newOption]
+        const newRawVotes = {
+          user1: [...rawVotes.user1, '4'],
+          user2: [...rawVotes.user2, '4']
+        }
+        
+        const result2 = deriveNormalizedData(newOptions, users, newRawVotes)
+        
+        expect(result1.normalizedVotes.user1.length).toBe(3)
+        expect(result2.normalizedVotes.user1.length).toBe(4)
+        expect(result2.normalizedVotes.user1[3]).toBe('4')
+        expect(result2.normalizedVotes.user2[3]).toBe('4')
+      })
+
+      it('删除候选项后应自动从所有用户规范化投票中移除', () => {
+        const rawVotes = { user1: ['1', '2', '3'], user2: ['3', '2', '1'] }
+        
+        const result1 = deriveNormalizedData(options, users, rawVotes)
+        
+        const newOptions = options.filter(o => o.id !== '2')
+        const newRawVotes = {
+          user1: rawVotes.user1.filter(id => id !== '2'),
+          user2: rawVotes.user2.filter(id => id !== '2')
+        }
+        
+        const result2 = deriveNormalizedData(newOptions, users, newRawVotes)
+        
+        expect(result1.normalizedVotes.user1.length).toBe(3)
+        expect(result2.normalizedVotes.user1.length).toBe(2)
+        expect(result2.normalizedVotes.user1).not.toContain('2')
+        expect(result2.normalizedVotes.user2).not.toContain('2')
+      })
+
+      it('拖拽调整投票顺序后规范化结果应同步更新', () => {
+        const rawVotesBefore = { user1: ['1', '2', '3'], user2: ['3', '2', '1'] }
+        
+        const result1 = deriveNormalizedData(options, users, rawVotesBefore)
+        
+        const rawVotesAfter = { ...rawVotesBefore, user1: ['3', '1', '2'] }
+        
+        const result2 = deriveNormalizedData(options, users, rawVotesAfter)
+        
+        expect(result1.normalizedVotes.user1).toEqual(['1', '2', '3'])
+        expect(result2.normalizedVotes.user1).toEqual(['3', '1', '2'])
+        expect(result1.normalizedVotes.user2).toEqual(result2.normalizedVotes.user2)
+      })
+
+      it('修复按钮应用规范化数据后应消除验证错误', () => {
+        const rawVotesWithErrors = { 
+          user1: ['1', '1', 'unknown', '2'], 
+          user2: ['3', '2', '1'] 
+        }
+        
+        const result1 = deriveNormalizedData(options, users, rawVotesWithErrors)
+        
+        expect(result1.validations.user1.valid).toBe(false)
+        expect(result1.validations.user1.errors.length).toBeGreaterThan(0)
+        expect(result1.validations.user2.valid).toBe(true)
+        
+        const fixedRawVotes = { 
+          user1: [...result1.normalizedVotes.user1], 
+          user2: ['3', '2', '1'] 
+        }
+        
+        const result2 = deriveNormalizedData(options, users, fixedRawVotes)
+        
+        expect(result2.validations.user1.valid).toBe(true)
+        expect(result2.validations.user1.errors).toEqual([])
+      })
+    })
+
+    describe('数据一致性验证', () => {
+      it('排名计算应严格基于规范化数据而非原始数据', () => {
+        const rawVotesWithErrors = { 
+          user1: ['1', '1', '2'], 
+          user2: ['3', '2', '1'] 
+        }
+        
+        const normalizedData = deriveNormalizedData(options, users, rawVotesWithErrors)
+        const normalizedVotesList = Object.entries(normalizedData.normalizedVotes).map(
+          ([userId, ranking]) => ({
+            userId,
+            userName: users.find(u => u.id === userId)?.name || userId,
+            ranking
+          })
+        )
+        
+        const rankings = calculateRankings(options, normalizedVotesList)
+        
+        expect(rankings.length).toBe(3)
+        
+        const user1Normalized = normalizedData.normalizedVotes.user1
+        expect(user1Normalized).toEqual(['1', '2', '3'])
+        
+        expect(normalizedData.validations.user1.valid).toBe(false)
+        expect(normalizedData.validations.user1.errors.some(e => e.includes('重复'))).toBe(true)
+      })
+
+      it('用户详情显示的排序应与排名计算使用的数据完全一致', () => {
+        const rawVotes = { user1: ['1', '2', '3'], user2: ['3', '2', '1'] }
+        
+        const normalizedData = deriveNormalizedData(options, users, rawVotes)
+        
+        const voteList = Object.entries(normalizedData.normalizedVotes).map(
+          ([userId, ranking]) => ({
+            userId,
+            userName: users.find(u => u.id === userId)?.name || userId,
+            ranking
+          })
+        )
+        
+        const rankings = calculateRankings(options, voteList)
+        
+        expect(normalizedData.normalizedVotes.user1).toEqual(
+          voteList.find(v => v.userId === 'user1').ranking
+        )
+        expect(normalizedData.normalizedVotes.user2).toEqual(
+          voteList.find(v => v.userId === 'user2').ranking
+        )
+      })
+    })
+
+    describe('边界场景回归测试', () => {
+      it('所有用户投票都有异常时排名仍应稳定计算', () => {
+        const rawVotes = { 
+          user1: ['1', '1', 'unknown'], 
+          user2: ['3'],
+          user3: []
+        }
+        const allUsers = [
+          { id: 'user1', name: '用户1' },
+          { id: 'user2', name: '用户2' },
+          { id: 'user3', name: '用户3' }
+        ]
+        
+        const normalizedData = deriveNormalizedData(options, allUsers, rawVotes)
+        
+        Object.values(normalizedData.normalizedVotes).forEach(normalized => {
+          expect(normalized.length).toBe(3)
+          expect([...new Set(normalized)].length).toBe(3)
+        })
+        
+        const voteList = Object.entries(normalizedData.normalizedVotes).map(
+          ([userId, ranking]) => ({
+            userId,
+            userName: allUsers.find(u => u.id === userId)?.name || userId,
+            ranking
+          })
+        )
+        
+        const rankings = calculateRankings(options, voteList)
+        
+        expect(rankings.length).toBe(3)
+        rankings.forEach(r => {
+          expect(typeof r.score).toBe('number')
+          expect(typeof r.rank).toBe('number')
+        })
+      })
+
+      it('空用户列表应返回空规范化结果', () => {
+        const rawVotes = { user1: ['1', '2', '3'] }
+        const emptyUsers = []
+        
+        const result = deriveNormalizedData(options, emptyUsers, rawVotes)
+        
+        expect(Object.keys(result.normalizedVotes).length).toBe(0)
+        expect(Object.keys(result.validations).length).toBe(0)
+      })
+
+      it('null/undefined 输入应安全处理', () => {
+        expect(deriveNormalizedData(null, users, {})).toEqual({
+          normalizedVotes: {},
+          validations: {}
+        })
+        expect(deriveNormalizedData(options, null, {})).toEqual({
+          normalizedVotes: {},
+          validations: {}
+        })
+        expect(deriveNormalizedData(options, users, undefined)).toEqual({
+          normalizedVotes: { user1: ['1', '2', '3'], user2: ['1', '2', '3'] },
+          validations: { 
+            user1: expect.any(Object), 
+            user2: expect.any(Object) 
+          }
+        })
       })
     })
   })

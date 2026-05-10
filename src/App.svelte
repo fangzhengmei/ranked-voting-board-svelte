@@ -14,79 +14,27 @@
   ]
   
   let rawVotes = {}
-  let normalizedVotes = {}
-  let voteValidations = {}
   let voteHistory = []
   let newOptionName = ''
   let newUserName = ''
   let selectedUser = 'user1'
   let autoNormalizeEnabled = true
-  let normalizationHistory = []
   
   users.forEach(user => {
     rawVotes[user.id] = options.map(opt => opt.id)
   })
   
-  function getValidOptionIds() {
-    return options.map(opt => opt.id)
-  }
+  $: normalizedData = deriveNormalizedData(options, users, rawVotes)
+  $: normalizedVotes = normalizedData.normalizedVotes
+  $: voteValidations = normalizedData.validations
   
-  function validateAndNormalize(userId, optionsParam = options) {
-    const validOptionIds = optionsParam.map(opt => opt.id)
-    const rawRanking = rawVotes[userId] || []
-    const normalizedRanking = sanitizeRanking(rawRanking, validOptionIds)
-    const validation = validateVote({ ranking: rawRanking }, optionsParam)
-    
-    return {
-      rawRanking,
-      normalizedRanking,
-      validation
-    }
-  }
-  
-  function normalizeAllVotes(optionsParam = options) {
-    const newNormalizedVotes = {}
-    const newValidations = {}
-    const newNormalizationHistory = []
-    
-    users.forEach(user => {
-      const result = validateAndNormalize(user.id, optionsParam)
-      
-      newNormalizedVotes[user.id] = result.normalizedRanking
-      newValidations[user.id] = result.validation
-      
-      if (!result.validation.valid) {
-        const oldStr = formatRankingForDisplay(result.rawRanking, optionsParam)
-        const newStr = formatRankingForDisplay(result.normalizedRanking, optionsParam)
-        newNormalizationHistory.push({
-          id: generateId(),
-          timestamp: new Date().toLocaleString('zh-CN'),
-          userName: user.name,
-          userId: user.id,
-          oldRanking: oldStr,
-          newRanking: newStr,
-          errors: [...result.validation.errors]
-        })
-      }
-    })
-    
-    normalizedVotes = newNormalizedVotes
-    voteValidations = newValidations
-    
-    if (newNormalizationHistory.length > 0) {
-      normalizationHistory = [...newNormalizationHistory, ...normalizationHistory].slice(0, 50)
-    }
-  }
-  
-  $: {
-    normalizeAllVotes(options)
-  }
-  
-  $: rankings = calculateRankings(options, Object.entries(normalizedVotes).map(([userId, ranking]) => ({
+  $: voteList = Object.entries(normalizedVotes).map(([userId, ranking]) => ({
     userId,
     userName: users.find(u => u.id === userId)?.name || userId,
     ranking
-  })))
+  }))
+  
+  $: rankings = calculateRankings(options, voteList)
   
   $: hasValidationErrors = Object.values(voteValidations).some(v => !v.valid)
   
@@ -94,15 +42,40 @@
     (count, v) => count + (v.errors?.length || 0), 0
   )
   
+  function deriveNormalizedData(currentOptions, currentUsers, currentRawVotes) {
+    const result = {
+      normalizedVotes: {},
+      validations: {}
+    }
+    
+    if (!Array.isArray(currentOptions) || !Array.isArray(currentUsers)) {
+      return result
+    }
+    
+    currentUsers.forEach(user => {
+      const rawRanking = currentRawVotes?.[user.id] || []
+      const normalizedRanking = sanitizeRanking(rawRanking, currentOptions.map(opt => opt.id))
+      const validation = validateVote({ ranking: rawRanking }, currentOptions)
+      
+      result.normalizedVotes[user.id] = normalizedRanking
+      result.validations[user.id] = validation
+    })
+    
+    return result
+  }
+  
   function addOption() {
     if (!newOptionName.trim()) return
     
     const newOption = { id: generateId(), name: newOptionName.trim() }
-    options = [...options, newOption]
+    const newRawVotes = { ...rawVotes }
     
-    Object.keys(rawVotes).forEach(userId => {
-      rawVotes[userId] = [...rawVotes[userId], newOption.id]
+    Object.keys(newRawVotes).forEach(userId => {
+      newRawVotes[userId] = [...newRawVotes[userId], newOption.id]
     })
+    
+    options = [...options, newOption]
+    rawVotes = newRawVotes
     
     recordHistory('添加候选项', newOption.name)
     newOptionName = ''
@@ -112,11 +85,15 @@
     const option = options.find(o => o.id === optionId)
     if (!option) return
     
-    options = options.filter(o => o.id !== optionId)
+    const newOptions = options.filter(o => o.id !== optionId)
+    const newRawVotes = { ...rawVotes }
     
-    Object.keys(rawVotes).forEach(userId => {
-      rawVotes[userId] = rawVotes[userId].filter(id => id !== optionId)
+    Object.keys(newRawVotes).forEach(userId => {
+      newRawVotes[userId] = newRawVotes[userId].filter(id => id !== optionId)
     })
+    
+    options = newOptions
+    rawVotes = newRawVotes
     
     recordHistory('删除候选项', option.name)
   }
@@ -125,8 +102,11 @@
     if (!newUserName.trim()) return
     
     const newUser = { id: generateId(), name: newUserName.trim() }
+    const newRawVotes = { ...rawVotes }
+    newRawVotes[newUser.id] = options.map(opt => opt.id)
+    
     users = [...users, newUser]
-    rawVotes[newUser.id] = options.map(opt => opt.id)
+    rawVotes = newRawVotes
     
     recordHistory('添加用户', newUser.name)
     newUserName = ''
@@ -137,13 +117,15 @@
     const user = users.find(u => u.id === userId)
     if (!user) return
     
-    users = users.filter(u => u.id !== userId)
-    delete rawVotes[userId]
-    delete normalizedVotes[userId]
-    delete voteValidations[userId]
+    const newUsers = users.filter(u => u.id !== userId)
+    const newRawVotes = { ...rawVotes }
+    delete newRawVotes[userId]
     
-    if (selectedUser === userId && users.length > 0) {
-      selectedUser = users[0].id
+    users = newUsers
+    rawVotes = newRawVotes
+    
+    if (selectedUser === userId && newUsers.length > 0) {
+      selectedUser = newUsers[0].id
     }
     
     recordHistory('删除用户', user.name)
@@ -174,8 +156,8 @@
     newRanking.splice(fromIndex, 1)
     newRanking.splice(toIndex, 0, draggedOptionId)
     
-    rawVotes[draggedUserId] = newRanking
-    rawVotes = { ...rawVotes }
+    const newRawVotes = { ...rawVotes, [draggedUserId]: newRanking }
+    rawVotes = newRawVotes
     
     const user = users.find(u => u.id === draggedUserId)
     recordHistory('调整投票顺序', `${user?.name} 的投票顺序`)
@@ -186,8 +168,8 @@
     if (!validation || validation.valid) return
     
     const oldRanking = [...rawVotes[userId]]
-    rawVotes[userId] = [...validation.ranking]
-    rawVotes = { ...rawVotes }
+    const newRawVotes = { ...rawVotes, [userId]: [...validation.ranking] }
+    rawVotes = newRawVotes
     
     const user = users.find(u => u.id === userId)
     const oldStr = formatRankingForDisplay(oldRanking, options)
@@ -197,12 +179,21 @@
   }
   
   function fixAllValidationErrors() {
+    const newRawVotes = { ...rawVotes }
+    let hasChanges = false
+    
     users.forEach(user => {
       const validation = voteValidations[user.id]
       if (validation && !validation.valid) {
-        fixValidationErrors(user.id)
+        newRawVotes[user.id] = [...validation.ranking]
+        hasChanges = true
       }
     })
+    
+    if (hasChanges) {
+      rawVotes = newRawVotes
+      recordHistory('一键修复', `修复了 ${totalValidationErrors} 个数据问题`)
+    }
   }
   
   function recordHistory(action, detail) {
