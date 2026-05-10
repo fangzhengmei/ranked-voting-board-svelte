@@ -13,47 +13,86 @@
     { id: 'user3', name: '用户 3' }
   ]
   
-  let votes = {}
+  let rawVotes = {}
+  let normalizedVotes = {}
+  let voteValidations = {}
   let voteHistory = []
   let newOptionName = ''
   let newUserName = ''
   let selectedUser = 'user1'
-  let validationErrors = {}
+  let autoNormalizeEnabled = true
+  let normalizationHistory = []
   
   users.forEach(user => {
-    votes[user.id] = options.map(opt => opt.id)
+    rawVotes[user.id] = options.map(opt => opt.id)
   })
   
-  function sanitizeAllVotes() {
-    const validOptionIds = options.map(opt => opt.id)
-    Object.keys(votes).forEach(userId => {
-      const oldRanking = votes[userId]
-      const newRanking = sanitizeRanking(oldRanking, validOptionIds)
-      if (JSON.stringify(oldRanking) !== JSON.stringify(newRanking)) {
-        votes[userId] = newRanking
+  function getValidOptionIds() {
+    return options.map(opt => opt.id)
+  }
+  
+  function validateAndNormalize(userId, optionsParam = options) {
+    const validOptionIds = optionsParam.map(opt => opt.id)
+    const rawRanking = rawVotes[userId] || []
+    const normalizedRanking = sanitizeRanking(rawRanking, validOptionIds)
+    const validation = validateVote({ ranking: rawRanking }, optionsParam)
+    
+    return {
+      rawRanking,
+      normalizedRanking,
+      validation
+    }
+  }
+  
+  function normalizeAllVotes(optionsParam = options) {
+    const newNormalizedVotes = {}
+    const newValidations = {}
+    const newNormalizationHistory = []
+    
+    users.forEach(user => {
+      const result = validateAndNormalize(user.id, optionsParam)
+      
+      newNormalizedVotes[user.id] = result.normalizedRanking
+      newValidations[user.id] = result.validation
+      
+      if (!result.validation.valid) {
+        const oldStr = formatRankingForDisplay(result.rawRanking, optionsParam)
+        const newStr = formatRankingForDisplay(result.normalizedRanking, optionsParam)
+        newNormalizationHistory.push({
+          id: generateId(),
+          timestamp: new Date().toLocaleString('zh-CN'),
+          userName: user.name,
+          userId: user.id,
+          oldRanking: oldStr,
+          newRanking: newStr,
+          errors: [...result.validation.errors]
+        })
       }
     })
+    
+    normalizedVotes = newNormalizedVotes
+    voteValidations = newValidations
+    
+    if (newNormalizationHistory.length > 0) {
+      normalizationHistory = [...newNormalizationHistory, ...normalizationHistory].slice(0, 50)
+    }
   }
   
   $: {
-    const newErrors = {}
-    users.forEach(user => {
-      const validation = validateVote(
-        { ranking: votes[user.id] || [] },
-        options
-      )
-      if (!validation.valid) {
-        newErrors[user.id] = validation.errors
-      }
-    })
-    validationErrors = newErrors
+    normalizeAllVotes(options)
   }
   
-  $: rankings = calculateRankings(options, Object.entries(votes).map(([userId, ranking]) => ({
+  $: rankings = calculateRankings(options, Object.entries(normalizedVotes).map(([userId, ranking]) => ({
     userId,
     userName: users.find(u => u.id === userId)?.name || userId,
     ranking
   })))
+  
+  $: hasValidationErrors = Object.values(voteValidations).some(v => !v.valid)
+  
+  $: totalValidationErrors = Object.values(voteValidations).reduce(
+    (count, v) => count + (v.errors?.length || 0), 0
+  )
   
   function addOption() {
     if (!newOptionName.trim()) return
@@ -61,8 +100,8 @@
     const newOption = { id: generateId(), name: newOptionName.trim() }
     options = [...options, newOption]
     
-    Object.keys(votes).forEach(userId => {
-      votes[userId] = [...votes[userId], newOption.id]
+    Object.keys(rawVotes).forEach(userId => {
+      rawVotes[userId] = [...rawVotes[userId], newOption.id]
     })
     
     recordHistory('添加候选项', newOption.name)
@@ -75,8 +114,8 @@
     
     options = options.filter(o => o.id !== optionId)
     
-    Object.keys(votes).forEach(userId => {
-      votes[userId] = votes[userId].filter(id => id !== optionId)
+    Object.keys(rawVotes).forEach(userId => {
+      rawVotes[userId] = rawVotes[userId].filter(id => id !== optionId)
     })
     
     recordHistory('删除候选项', option.name)
@@ -87,7 +126,7 @@
     
     const newUser = { id: generateId(), name: newUserName.trim() }
     users = [...users, newUser]
-    votes[newUser.id] = options.map(opt => opt.id)
+    rawVotes[newUser.id] = options.map(opt => opt.id)
     
     recordHistory('添加用户', newUser.name)
     newUserName = ''
@@ -99,7 +138,9 @@
     if (!user) return
     
     users = users.filter(u => u.id !== userId)
-    delete votes[userId]
+    delete rawVotes[userId]
+    delete normalizedVotes[userId]
+    delete voteValidations[userId]
     
     if (selectedUser === userId && users.length > 0) {
       selectedUser = users[0].id
@@ -123,7 +164,7 @@
     
     if (draggedUserId !== targetUserId) return
     
-    const ranking = votes[draggedUserId]
+    const ranking = rawVotes[draggedUserId] || []
     const fromIndex = ranking.indexOf(draggedOptionId)
     const toIndex = ranking.indexOf(targetOptionId)
     
@@ -133,13 +174,35 @@
     newRanking.splice(fromIndex, 1)
     newRanking.splice(toIndex, 0, draggedOptionId)
     
-    const oldRanking = [...votes[draggedUserId]]
-    votes[draggedUserId] = newRanking
+    rawVotes[draggedUserId] = newRanking
+    rawVotes = { ...rawVotes }
     
     const user = users.find(u => u.id === draggedUserId)
     recordHistory('调整投票顺序', `${user?.name} 的投票顺序`)
+  }
+  
+  function fixValidationErrors(userId) {
+    const validation = voteValidations[userId]
+    if (!validation || validation.valid) return
     
-    votes = { ...votes }
+    const oldRanking = [...rawVotes[userId]]
+    rawVotes[userId] = [...validation.ranking]
+    rawVotes = { ...rawVotes }
+    
+    const user = users.find(u => u.id === userId)
+    const oldStr = formatRankingForDisplay(oldRanking, options)
+    const newStr = formatRankingForDisplay(validation.ranking, options)
+    
+    recordHistory('修复投票数据', `${user?.name}: ${oldStr} → ${newStr}`)
+  }
+  
+  function fixAllValidationErrors() {
+    users.forEach(user => {
+      const validation = voteValidations[user.id]
+      if (validation && !validation.valid) {
+        fixValidationErrors(user.id)
+      }
+    })
   }
   
   function recordHistory(action, detail) {
@@ -154,12 +217,24 @@
     ]
   }
   
-  function getOptionName(optionId) {
-    return options.find(o => o.id === optionId)?.name || '未知'
+  function getOptionName(optionId, optionsParam = options) {
+    return optionsParam.find(o => o.id === optionId)?.name || `未知(${optionId})`
+  }
+  
+  function formatRankingForDisplay(ranking, optionsParam = options) {
+    if (!ranking) return '无'
+    return ranking.map(id => getOptionName(id, optionsParam)).join(' → ')
   }
   
   function formatRanking(ranking) {
-    return ranking.map(id => getOptionName(id)).join(' → ')
+    return formatRankingForDisplay(ranking, options)
+  }
+  
+  function getRankingDisplayForUser(userId) {
+    if (autoNormalizeEnabled) {
+      return normalizedVotes[userId] || []
+    }
+    return rawVotes[userId] || []
   }
 </script>
 
@@ -290,6 +365,9 @@
     cursor: pointer;
     font-weight: 500;
     transition: all 0.3s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
   
   .user-tab.active {
@@ -299,6 +377,19 @@
   
   .user-tab:hover:not(.active) {
     background: #dee2e6;
+  }
+  
+  .error-badge {
+    background: #dc3545;
+    color: white;
+    border-radius: 50%;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: bold;
   }
   
   .ranking-list {
@@ -429,7 +520,7 @@
     list-style: none;
     padding: 0;
     margin: 0;
-    max-height: 400px;
+    max-height: 300px;
     overflow-y: auto;
   }
   
@@ -472,6 +563,122 @@
     margin-bottom: 20px;
     font-size: 13px;
     color: #333;
+  }
+  
+  .validation-alert {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 15px;
+  }
+  
+  .validation-alert-title {
+    font-weight: 600;
+    color: #856404;
+    margin-bottom: 8px;
+  }
+  
+  .validation-errors {
+    margin: 0;
+    padding-left: 20px;
+    font-size: 13px;
+    color: #856404;
+  }
+  
+  .validation-errors li {
+    margin-bottom: 4px;
+  }
+  
+  .fix-button {
+    background: #28a745;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 12px;
+    margin-top: 8px;
+    transition: background 0.2s;
+  }
+  
+  .fix-button:hover {
+    background: #218838;
+  }
+  
+  .fix-all-button {
+    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    width: 100%;
+    margin-top: 10px;
+    transition: transform 0.2s;
+  }
+  
+  .fix-all-button:hover {
+    transform: translateY(-1px);
+  }
+  
+  .data-source-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    margin-left: 8px;
+  }
+  
+  .data-source-badge.normalized {
+    background: #d4edda;
+    color: #155724;
+  }
+  
+  .data-source-badge.raw {
+    background: #f8d7da;
+    color: #721c24;
+  }
+  
+  .section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .toggle-switch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #666;
+  }
+  
+  .toggle-switch input[type="checkbox"] {
+    cursor: pointer;
+  }
+  
+  .normalized-indicator {
+    background: #d4edda;
+    border: 1px solid #28a745;
+    border-radius: 4px;
+    padding: 8px 12px;
+    margin-bottom: 15px;
+    font-size: 13px;
+    color: #155724;
+  }
+  
+  .raw-indicator {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 4px;
+    padding: 8px 12px;
+    margin-bottom: 15px;
+    font-size: 13px;
+    color: #856404;
   }
   
   @media (max-width: 1024px) {
@@ -537,10 +744,39 @@
           {/each}
         </ul>
       {/if}
+      
+      <h2 style="margin-top: 30px;">⚙️ 数据设置</h2>
+      <div class="toggle-switch">
+        <input type="checkbox" bind:checked={autoNormalizeEnabled} id="auto-normalize" />
+        <label for="auto-normalize">自动规范化数据</label>
+      </div>
+      
+      {#if hasValidationErrors}
+        <button class="fix-all-button" on:click={fixAllValidationErrors}>
+          🔧 一键修复所有数据问题 ({totalValidationErrors} 个错误)
+        </button>
+      {/if}
     </div>
     
     <div class="column">
-      <h2>🗳️ 用户投票</h2>
+      <div class="section-header">
+        <h2>🗳️ 用户投票</h2>
+        {#if autoNormalizeEnabled}
+          <span class="data-source-badge normalized">已规范化</span>
+        {:else}
+          <span class="data-source-badge raw">原始数据</span>
+        {/if}
+      </div>
+      
+      {#if autoNormalizeEnabled}
+        <div class="normalized-indicator">
+          ✅ 所有投票数据已自动规范化，综合排名基于规范后的数据计算
+        </div>
+      {:else}
+        <div class="raw-indicator">
+          ⚠️ 当前显示原始投票数据，综合排名仍基于规范化数据
+        </div>
+      {/if}
       
       <div class="instructions">
         💡 提示：拖拽候选项可以调整偏好顺序，排名越靠前得分越高
@@ -553,34 +789,65 @@
       {:else}
         <div class="user-selector">
           {#each users as user}
+            {@const hasError = voteValidations[user.id] && !voteValidations[user.id].valid}
             <button 
               class="user-tab {selectedUser === user.id ? 'active' : ''}"
               on:click={() => selectedUser = user.id}
             >
               {user.name}
+              {#if hasError}
+                <span class="error-badge">{voteValidations[user.id].errors.length}</span>
+              {/if}
             </button>
           {/each}
         </div>
         
         {#each users as user}
-          {#if selectedUser === user.id && votes[user.id]}
+          {#if selectedUser === user.id}
+            {@const displayRanking = getRankingDisplayForUser(user.id)}
+            {@const validation = voteValidations[user.id]}
+            
+            {#if validation && !validation.valid}
+              <div class="validation-alert">
+                <div class="validation-alert-title">
+                  ⚠️ 该用户投票存在 {validation.errors.length} 个问题
+                </div>
+                <ul class="validation-errors">
+                  {#each validation.errors as error}
+                    <li>{error}</li>
+                  {/each}
+                </ul>
+                {#if autoNormalizeEnabled}
+                  <div style="font-size: 12px; color: #856404; margin-top: 8px;">
+                    ℹ️ 综合排名已自动使用规范化后的数据计算
+                  </div>
+                {/if}
+                <button class="fix-button" on:click={() => fixValidationErrors(user.id)}>
+                  🔧 修复并应用规范化数据
+                </button>
+              </div>
+            {/if}
+            
             <h3 style="margin-top: 0;">{user.name} 的偏好排序：</h3>
             <ul class="ranking-list">
-              {#each votes[user.id] as optionId, index}
+              {#each displayRanking as optionId, index}
                 {@const option = options.find(o => o.id === optionId)}
-                {#if option}
-                  <li 
-                    class="ranking-item"
-                    draggable="true"
-                    on:dragstart={(e) => handleDragStart(user.id, optionId, e)}
-                    on:dragover={handleDragOver}
-                    on:drop={(e) => handleDrop(user.id, optionId, e)}
-                  >
-                    <span class="rank-number">{index + 1}</span>
-                    <span class="ranking-item-name">{option.name}</span>
-                    <span class="drag-handle">⋮⋮</span>
-                  </li>
-                {/if}
+                <li 
+                  class="ranking-item"
+                  draggable="true"
+                  on:dragstart={(e) => handleDragStart(user.id, optionId, e)}
+                  on:dragover={handleDragOver}
+                  on:drop={(e) => handleDrop(user.id, optionId, e)}
+                >
+                  <span class="rank-number">{index + 1}</span>
+                  <span class="ranking-item-name">
+                    {option?.name || `未知(${optionId})`}
+                    {#if !option}
+                      <span style="color: #dc3545; font-size: 12px;">(无效ID)</span>
+                    {/if}
+                  </span>
+                  <span class="drag-handle">⋮⋮</span>
+                </li>
               {/each}
             </ul>
           {/if}
@@ -634,14 +901,19 @@
           {/each}
         </ul>
         
-        {#if votes && Object.keys(votes).length > 0}
+        {#if normalizedVotes && Object.keys(normalizedVotes).length > 0}
           <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee;">
-            <h3 style="margin-bottom: 10px;">各用户投票详情：</h3>
+            <h3 style="margin-bottom: 10px;">各用户投票详情（已规范化）：</h3>
             {#each users as user}
-              {#if votes[user.id]}
-                <div style="margin-bottom: 10px; padding: 10px; background: #f8f9fa; border-radius: 6px;">
-                  <strong>{user.name}:</strong><br/>
-                  <small style="color: #666;">{formatRanking(votes[user.id])}</small>
+              {#if normalizedVotes[user.id]}
+                {@const validation = voteValidations[user.id]}
+                <div style="margin-bottom: 10px; padding: 10px; background: #f8f9fa; border-radius: 6px; {validation && !validation.valid ? 'border-left: 3px solid #ffc107;' : ''}">
+                  <strong>{user.name}:</strong>
+                  {#if validation && !validation.valid}
+                    <span style="font-size: 11px; color: #856404; margin-left: 8px;">(已规范化)</span>
+                  {/if}
+                  <br/>
+                  <small style="color: #666;">{formatRanking(normalizedVotes[user.id])}</small>
                 </div>
               {/if}
             {/each}

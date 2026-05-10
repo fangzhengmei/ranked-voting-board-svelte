@@ -508,4 +508,204 @@ describe('排名计算逻辑', () => {
       expect(result.errors).toContain('ranking 必须是数组')
     })
   })
+
+  describe('数据规范化与验证交互场景', () => {
+    const options = [
+      { id: '1', name: '选项A' },
+      { id: '2', name: '选项B' },
+      { id: '3', name: '选项C' }
+    ]
+
+    describe('增删候选项后的规范化', () => {
+      it('添加候选项后，原始投票和规范化投票应一致', () => {
+        const originalOptions = [
+          { id: '1', name: '选项A' },
+          { id: '2', name: '选项B' }
+        ]
+        const rawVote = { userId: 'u1', userName: '用户1', ranking: ['1', '2'] }
+        const rankings1 = calculateRankings(originalOptions, [rawVote])
+        
+        const optionA1 = rankings1.find(r => r.id === '1')
+        const optionB1 = rankings1.find(r => r.id === '2')
+        
+        expect(optionA1.score).toBe(1)
+        expect(optionB1.score).toBe(0)
+      })
+
+      it('删除候选项后，规范化投票应自动过滤无效ID', () => {
+        const newOptions = [
+          { id: '1', name: '选项A' },
+          { id: '3', name: '选项C' }
+        ]
+        const rawVote = { userId: 'u1', userName: '用户1', ranking: ['1', '2', 'deleted_id'] }
+        
+        const rankings = calculateRankings(newOptions, [rawVote])
+        
+        const optionA = rankings.find(r => r.id === '1')
+        const optionC = rankings.find(r => r.id === '3')
+        
+        expect(optionA.score).toBe(1)
+        expect(optionC.score).toBe(0)
+      })
+    })
+
+    describe('投票数据一致性验证', () => {
+      it('原始投票和规范化投票应产生一致的排名结果', () => {
+        const rawVotes = [
+          { userId: 'u1', userName: '用户1', ranking: ['1', '1', 'unknown', '2'] },
+          { userId: 'u2', userName: '用户2', ranking: ['2', '3'] }
+        ]
+        
+        const validOptionIds = ['1', '2', '3']
+        const normalizedVotes = rawVotes.map(vote => ({
+          ...vote,
+          ranking: sanitizeRanking(vote.ranking, validOptionIds)
+        }))
+        
+        const rawRankings = calculateRankings(options, rawVotes)
+        const normalizedRankings = calculateRankings(options, normalizedVotes)
+        
+        expect(rawRankings.length).toBe(normalizedRankings.length)
+        
+        rawRankings.forEach((r, idx) => {
+          expect(r.id).toBe(normalizedRankings[idx].id)
+          expect(r.score).toBe(normalizedRankings[idx].score)
+          expect(r.rank).toBe(normalizedRankings[idx].rank)
+        })
+      })
+
+      it('使用 validateVote 修正后的投票应与 sanitizeRanking 结果一致', () => {
+        const rawRanking = ['1', '1', 'unknown', '2', '3', '3']
+        const validOptionIds = ['1', '2', '3']
+        
+        const sanitized = sanitizeRanking(rawRanking, validOptionIds)
+        const validated = validateVote({ ranking: rawRanking }, options)
+        
+        expect(validated.ranking).toEqual(sanitized)
+      })
+    })
+
+    describe('多用户投票数据一致性', () => {
+      it('多个用户存在不同类型异常时，排名计算应稳定', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: ['1', '2', '3'] },
+          { userId: 'u2', userName: '用户2', ranking: ['2', '2', 'unknown'] },
+          { userId: 'u3', userName: '用户3', ranking: ['3'] },
+          { userId: 'u4', userName: '用户4', ranking: ['unknown', 'invalid'] }
+        ]
+        
+        const rankings = calculateRankings(options, votes)
+        
+        expect(rankings.length).toBe(3)
+        rankings.forEach(r => {
+          expect(typeof r.score).toBe('number')
+          expect(typeof r.rank).toBe('number')
+          expect(r.score).toBeGreaterThanOrEqual(0)
+        })
+      })
+
+      it('所有用户投票异常时，应按选项顺序公平计分', () => {
+        const votes = [
+          { userId: 'u1', userName: '用户1', ranking: ['unknown'] },
+          { userId: 'u2', userName: '用户2', ranking: [] }
+        ]
+        
+        const rankings = calculateRankings(options, votes)
+        
+        const optionA = rankings.find(r => r.id === '1')
+        const optionB = rankings.find(r => r.id === '2')
+        const optionC = rankings.find(r => r.id === '3')
+        
+        expect(optionA.score).toBe(4)
+        expect(optionB.score).toBe(2)
+        expect(optionC.score).toBe(0)
+      })
+    })
+
+    describe('验证结果结构一致性', () => {
+      it('validateVote 应始终返回包含 valid、errors、ranking 的对象', () => {
+        const testCases = [
+          null,
+          undefined,
+          {},
+          { ranking: null },
+          { ranking: undefined },
+          { ranking: [] },
+          { ranking: ['1', '2', '3'] },
+          { ranking: ['1', '1', 'unknown'] }
+        ]
+        
+        testCases.forEach(testCase => {
+          const result = validateVote(testCase, options)
+          
+          expect(result).toBeDefined()
+          expect(typeof result.valid).toBe('boolean')
+          expect(Array.isArray(result.errors)).toBe(true)
+          expect(Array.isArray(result.ranking)).toBe(true)
+        })
+      })
+
+      it('sanitizeRanking 应始终返回有效选项ID数组', () => {
+        const validOptionIds = ['1', '2', '3']
+        const testCases = [
+          null,
+          undefined,
+          [],
+          ['1'],
+          ['1', '2', '3'],
+          ['1', '1', '2'],
+          ['unknown', '1'],
+          [null, undefined, 123, '1']
+        ]
+        
+        testCases.forEach(testCase => {
+          const result = sanitizeRanking(testCase, validOptionIds)
+          
+          expect(Array.isArray(result)).toBe(true)
+          expect(result.length).toBe(validOptionIds.length)
+          result.forEach(id => {
+            expect(validOptionIds.includes(id)).toBe(true)
+          })
+        })
+      })
+    })
+
+    describe('异常场景下的可解释性', () => {
+      it('validateVote 应对每种异常提供可解释的错误信息', () => {
+        const testCases = [
+          {
+            vote: { ranking: ['1', '1', '2'] },
+            expectedError: '重复候选'
+          },
+          {
+            vote: { ranking: ['1', 'unknown', '2'] },
+            expectedError: '未知候选ID'
+          },
+          {
+            vote: { ranking: ['1'] },
+            expectedError: '缺少候选'
+          },
+          {
+            vote: { ranking: ['1', null, 123, '2'] },
+            expectedError: '无效类型'
+          }
+        ]
+        
+        testCases.forEach(({ vote, expectedError }) => {
+          const result = validateVote(vote, options)
+          
+          expect(result.valid).toBe(false)
+          expect(result.errors.some(e => e.includes(expectedError))).toBe(true)
+        })
+      })
+
+      it('重复出现的相同问题应只报告一次', () => {
+        const vote = { ranking: ['1', '1', '1', '2'] }
+        const result = validateVote(vote, options)
+        
+        const duplicateErrors = result.errors.filter(e => e.includes('重复候选'))
+        expect(duplicateErrors.length).toBe(1)
+      })
+    })
+  })
 })
