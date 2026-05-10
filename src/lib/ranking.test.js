@@ -910,6 +910,133 @@ describe('排名计算逻辑', () => {
       })
     })
 
+    describe('拖拽操作同步测试', () => {
+      it('拖拽后规范化数据应立即同步更新', () => {
+        const rawVotesBefore = { user1: ['1', '2', '3'], user2: ['3', '2', '1'] }
+        
+        const result1 = deriveNormalizedData(options, users, rawVotesBefore)
+        
+        const rankingBefore = result1.normalizedVotes.user1
+        const validationsBefore = result1.validations.user1
+        
+        expect(rankingBefore).toEqual(['1', '2', '3'])
+        expect(validationsBefore.valid).toBe(true)
+        
+        const rawVotesAfter = { ...rawVotesBefore, user1: ['3', '1', '2'] }
+        
+        const result2 = deriveNormalizedData(options, users, rawVotesAfter)
+        
+        const rankingAfter = result2.normalizedVotes.user1
+        const validationsAfter = result2.validations.user1
+        
+        expect(rankingAfter).toEqual(['3', '1', '2'])
+        expect(validationsAfter.valid).toBe(true)
+        expect(result1.normalizedVotes.user2).toEqual(result2.normalizedVotes.user2)
+      })
+
+      it('拖拽后排名计算应基于更新后的规范化数据', () => {
+        const rawVotesBefore = { user1: ['1', '2', '3'], user2: ['3', '2', '1'] }
+        
+        const normalized1 = deriveNormalizedData(options, users, rawVotesBefore)
+        const voteList1 = Object.entries(normalized1.normalizedVotes).map(
+          ([userId, ranking]) => ({
+            userId,
+            userName: users.find(u => u.id === userId)?.name || userId,
+            ranking
+          })
+        )
+        const rankings1 = calculateRankings(options, voteList1)
+        
+        const rawVotesAfter = { ...rawVotesBefore, user1: ['3', '1', '2'] }
+        
+        const normalized2 = deriveNormalizedData(options, users, rawVotesAfter)
+        const voteList2 = Object.entries(normalized2.normalizedVotes).map(
+          ([userId, ranking]) => ({
+            userId,
+            userName: users.find(u => u.id === userId)?.name || userId,
+            ranking
+          })
+        )
+        const rankings2 = calculateRankings(options, voteList2)
+        
+        expect(rankings1).not.toEqual(rankings2)
+      })
+
+      it('拖拽包含重复的选项应被规范化去重', () => {
+        const rawVotesWithDuplicate = { user1: ['1', '2', '3'], user2: ['1', '1', '2'] }
+        
+        const result = deriveNormalizedData(options, users, rawVotesWithDuplicate)
+        
+        expect(result.normalizedVotes.user2).toEqual(['1', '2', '3'])
+        expect(result.validations.user2.valid).toBe(false)
+        expect(result.validations.user2.errors.some(e => e.includes('重复'))).toBe(true)
+      })
+    })
+
+    describe('修复操作同步测试', () => {
+      it('修复后原始数据应更新为规范化数据', () => {
+        const rawVotesWithErrors = { 
+          user1: ['1', '1', 'unknown', '2'], 
+          user2: ['3', '2', '1'] 
+        }
+        
+        const result1 = deriveNormalizedData(options, users, rawVotesWithErrors)
+        
+        expect(result1.validations.user1.valid).toBe(false)
+        
+        const fixedRawVotes = { 
+          ...rawVotesWithErrors, 
+          user1: [...result1.normalizedVotes.user1] 
+        }
+        
+        const result2 = deriveNormalizedData(options, users, fixedRawVotes)
+        
+        expect(result2.validations.user1.valid).toBe(true)
+        expect(result2.normalizedVotes.user1).toEqual(fixedRawVotes.user1)
+      })
+
+      it('修复后验证错误应被清除', () => {
+        const rawVotesWithErrors = { 
+          user1: ['1', '1', 'unknown'], 
+          user2: ['3', '2', '1'] 
+        }
+        
+        const result1 = deriveNormalizedData(options, users, rawVotesWithErrors)
+        
+        expect(result1.validations.user1.errors.length).toBeGreaterThan(0)
+        
+        const fixedRawVotes = { 
+          ...rawVotesWithErrors, 
+          user1: [...result1.normalizedVotes.user1] 
+        }
+        
+        const result2 = deriveNormalizedData(options, users, fixedRawVotes)
+        
+        expect(result2.validations.user1.errors).toEqual([])
+      })
+
+      it('修复后其他用户数据应不受影响', () => {
+        const rawVotesWithErrors = { 
+          user1: ['1', '1', 'unknown'], 
+          user2: ['3', '2', '1'] 
+        }
+        
+        const result1 = deriveNormalizedData(options, users, rawVotesWithErrors)
+        
+        expect(result1.validations.user2.valid).toBe(true)
+        
+        const fixedRawVotes = { 
+          ...rawVotesWithErrors, 
+          user1: [...result1.normalizedVotes.user1] 
+        }
+        
+        const result2 = deriveNormalizedData(options, users, fixedRawVotes)
+        
+        expect(result2.validations.user2.valid).toBe(true)
+        expect(result2.normalizedVotes.user2).toEqual(result1.normalizedVotes.user2)
+      })
+    })
+
     describe('边界场景回归测试', () => {
       it('所有用户投票都有异常时排名仍应稳定计算', () => {
         const rawVotes = { 

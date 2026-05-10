@@ -18,7 +18,6 @@
   let newOptionName = ''
   let newUserName = ''
   let selectedUser = 'user1'
-  let autoNormalizeEnabled = true
   
   users.forEach(user => {
     rawVotes[user.id] = options.map(opt => opt.id)
@@ -222,10 +221,7 @@
   }
   
   function getRankingDisplayForUser(userId) {
-    if (autoNormalizeEnabled) {
-      return normalizedVotes[userId] || []
-    }
-    return rawVotes[userId] || []
+    return normalizedVotes[userId] || []
   }
 </script>
 
@@ -736,12 +732,6 @@
         </ul>
       {/if}
       
-      <h2 style="margin-top: 30px;">⚙️ 数据设置</h2>
-      <div class="toggle-switch">
-        <input type="checkbox" bind:checked={autoNormalizeEnabled} id="auto-normalize" />
-        <label for="auto-normalize">自动规范化数据</label>
-      </div>
-      
       {#if hasValidationErrors}
         <button class="fix-all-button" on:click={fixAllValidationErrors}>
           🔧 一键修复所有数据问题 ({totalValidationErrors} 个错误)
@@ -750,24 +740,11 @@
     </div>
     
     <div class="column">
-      <div class="section-header">
-        <h2>🗳️ 用户投票</h2>
-        {#if autoNormalizeEnabled}
-          <span class="data-source-badge normalized">已规范化</span>
-        {:else}
-          <span class="data-source-badge raw">原始数据</span>
-        {/if}
-      </div>
+      <h2>🗳️ 用户投票</h2>
       
-      {#if autoNormalizeEnabled}
-        <div class="normalized-indicator">
-          ✅ 所有投票数据已自动规范化，综合排名基于规范后的数据计算
-        </div>
-      {:else}
-        <div class="raw-indicator">
-          ⚠️ 当前显示原始投票数据，综合排名仍基于规范化数据
-        </div>
-      {/if}
+      <div class="normalized-indicator">
+        ✅ 所有投票数据已自动规范化，综合排名与详情基于同一份数据
+      </div>
       
       <div class="instructions">
         💡 提示：拖拽候选项可以调整偏好顺序，排名越靠前得分越高
@@ -808,11 +785,9 @@
                     <li>{error}</li>
                   {/each}
                 </ul>
-                {#if autoNormalizeEnabled}
-                  <div style="font-size: 12px; color: #856404; margin-top: 8px;">
-                    ℹ️ 综合排名已自动使用规范化后的数据计算
-                  </div>
-                {/if}
+                <div style="font-size: 12px; color: #856404; margin-top: 8px;">
+                  ℹ️ 综合排名与详情已自动使用规范化后的数据计算
+                </div>
                 <button class="fix-button" on:click={() => fixValidationErrors(user.id)}>
                   🔧 修复并应用规范化数据
                 </button>
